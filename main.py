@@ -1,11 +1,25 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, field_validator # field_validator 추가
-import re # 정규표현식 사용을 위해 추가
-from enum import Enum #리스트를 정해두어 그 중에서 고르도록 함
-
+from fastapi import FastAPI, HTTPException, File, UploadFile
+from schemas import UserCreate, LoginRequest
+import shutil
+import os
+from datetime import datetime
 app = FastAPI()
 
-# --- 데이터 구조 정의 ---
+
+# --- 설정 및 초기화 ---
+UPLOAD_DIR = "./uploads"
+
+# 업로드 폴더가 없으면 생성
+if not os.path.exists(UPLOAD_DIR):
+    os.makedirs(UPLOAD_DIR)
+#이게 폴더 만드는 부분인데 모든 사용자의 이미지가 한 번에 저장된느거라 
+#개인용으로 DB 분리하는 작업 필요
+
+db_users = [] #가입된 유저들을 저장할 임시 명단 (서버 끄면 초기화됨) 
+""" 지금은 서버 끄면 초기화지만 나중에 DB에 저장 필요"""
+
+
+ # --- 데이터 구조 정의 ---
 
 # 1. 기본 경로(Root) 설정
 @app.get("/")
@@ -17,53 +31,8 @@ def read_root():
 def read_item(item_id: int, q: str = None):
     return {"item_id": item_id, "query": q}
 
-#성별 선택지 정의
-class Gender(str, Enum):
-    male = "남자"
-    female = "여자"
 
-#3. 회원가입 데이터구조
-class UserCreate(BaseModel):
-    email: str
-    name: str
-    age: int
-    gender: Gender 
-    password: str
-
-    # 비밀번호 검증 함수 추가
-    @field_validator('password')
-    @classmethod
-    def validate_password(cls, v: str):
-        # 1. 길이 체크 (8~20자)
-        if not (8 <= len(v) <= 20):
-            raise ValueError('비밀번호는 8자 이상 20자 이하로 설정해주세요.')
-        
-        # 2. 영문자 포함 여부 체크
-        if not re.search(r'[A-Za-z]', v):
-            raise ValueError('비밀번호에 최소 하나의 영문자가 포함되어야 합니다.')
-            
-        # 3. 숫자 포함 여부 체크
-        if not re.search(r'\d', v):
-            raise ValueError('비밀번호에 최소 하나의 숫자가 포함되어야 합니다.')
-            
-        # 4. 허용된 문자만 있는지 체크 (영문+숫자만)
-        if not re.fullmatch(r'[A-Za-z\d]+', v):
-            raise ValueError('비밀번호는 영문자와 숫자만 사용할 수 있습니다.')
-            
-        return v
-
-#4. 로그인 시 받을 데이터 규칙
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-# 가입된 유저들을 저장할 임시 명단 (서버 끄면 초기화됨)
-db_users = [] 
-""" 지금은 서버 끄면 초기화지만 나중에 DB에 저장 필요"""
-
-
-
-#API
+#----------------API----------------------
 #회원가입 API
 @app.post("/signup")
 def signup(user: UserCreate):
@@ -88,3 +57,35 @@ def login(request: LoginRequest):
                 raise HTTPException(status_code=401, detail="비밀번호가 틀렸습니다.")
                 
     raise HTTPException(status_code=404, detail="존재하지 않는 아이디입니다.")
+
+
+#의약품 분석 API (이미지 업로드)
+#앱에서 보내는 사진을 서버의 하드디스크에 저장하는 과정
+@app.post("/pills/analyze")
+async def analyze_pill(file: UploadFile = File(...)):
+    # 1. 파일 확장자 검사
+    extension = file.filename.split(".")[-1].lower()
+    if extension not in ["jpg", "jpeg", "png"]:
+        raise HTTPException(status_code=400, detail="이미지 파일(jpg, png)만 가능합니다.")
+
+    # 2. 유니크한 파일명 생성 (시간_파일명) - 여러 파일들 식별
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_name = f"{timestamp}_{file.filename}"
+    file_path = os.path.join(UPLOAD_DIR, file_name)
+
+    # 3. 서버 로컬 폴더에 저장
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"파일 저장 중 오류 발생: {str(e)}")
+
+    # 4. 결과 반환 (추후 AI 모델 연결 지점)
+    return {
+        "status": "success",
+        "message": "이미지가 업로드되었습니다. 분석을 시작합니다.",
+        "saved_path": file_path,
+        "ai_result": None  # AI 파트원이 완성하면 여기에 결과값이 들어갑니다.
+    }
+
+
